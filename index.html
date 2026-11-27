@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Murmuration</title>
+<style>
+html,body{margin:0;height:100%;background:#050505;color:#f2efe6;overflow:hidden;font:13px/1.4 system-ui,sans-serif}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none;display:block}
+header{position:fixed;left:20px;top:20px;pointer-events:none}
+h1{margin:0;font-size:15px;letter-spacing:.28em;text-transform:uppercase;font-weight:600}
+header p{margin:4px 0 0;color:#8a877f}
+form{position:fixed;left:20px;right:20px;bottom:calc(18px + env(safe-area-inset-bottom));display:flex;gap:18px;max-width:560px;margin:auto}
+label{flex:1;color:#8a877f;text-transform:uppercase;letter-spacing:.14em;font-size:10px}
+input{display:block;width:100%;margin:8px 0 0;accent-color:#ffe600}
+</style></head><body>
+<canvas id="c" aria-label="Flock of points. Touch or drag to send a predator through it."></canvas>
+<header><h1>Murmuration</h1><p>Touch the flock.</p></header>
+<form onsubmit="return false">
+<label>Cohesion<input id="coh" type="range" min="0" max="2" step="0.01" value="1"></label>
+<label>Alignment<input id="ali" type="range" min="0" max="2" step="0.01" value="1"></label>
+<label>Spacing<input id="spc" type="range" min="0.3" max="2" step="0.01" value="1"></label>
+</form>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d');
+const N=innerWidth<700?1800:3000,K=7,CELL=9;
+const P=new Float32Array(N*3),V=new Float32Array(N*3),NB=new Int32Array(N*K).fill(-1);
+for(let i=0;i<N*3;i++){P[i]=(Math.random()-.5)*70;V[i]=(Math.random()-.5)*.4+(i%3==0?.6:0)}
+const SIZE=4096,head=new Int32Array(SIZE),next=new Int32Array(N);
+const hash=(x,y,z)=>((x*73856093)^(y*19349663)^(z*83492791))&(SIZE-1);
+function buildGrid(){head.fill(-1);for(let i=0;i<N;i++){const h=hash(Math.floor(P[i*3]/CELL),Math.floor(P[i*3+1]/CELL),Math.floor(P[i*3+2]/CELL));next[i]=head[h];head[h]=i}}
+const bd=new Float64Array(K),bi=new Int32Array(K);
+// topological neighbors: the K closest, whatever their distance (within the searched cells)
+function findNeighbors(i){
+ const x=P[i*3],y=P[i*3+1],z=P[i*3+2],cx=Math.floor(x/CELL),cy=Math.floor(y/CELL),cz=Math.floor(z/CELL);
+ bd.fill(1e12);bi.fill(-1);
+ for(let a=-1;a<2;a++)for(let b=-1;b<2;b++)for(let c=-1;c<2;c++){
+  let j=head[hash(cx+a,cy+b,cz+c)],seen=0;
+  while(j>=0&&seen<24){
+   if(j!==i){const dx=P[j*3]-x,dy=P[j*3+1]-y,dz=P[j*3+2]-z,d=dx*dx+dy*dy+dz*dz;
+    if(d<bd[K-1]&&bi.indexOf(j)<0){let k=K-1;while(k>0&&bd[k-1]>d){bd[k]=bd[k-1];bi[k]=bi[k-1];k--}bd[k]=d;bi[k]=j}}
+   j=next[j];seen++}
+ }
+ NB.set(bi,i*K);
+}
+let ox=0,oy=0,oz=0,spread=30,frame=0,yaw=0,W=0,H=0,F=0;const CAM=190,pitch=.22;
+const pointer={on:false,x:0,y:0};
+function step(coh,ali,spc){
+ buildGrid();
+ for(let i=frame%3;i<N;i+=3)findNeighbors(i);
+ const t=frame*.006;
+ // wandering roost: the flock chases it, which folds and stretches the shape
+ const rx=Math.sin(t*.9)*34,ry=Math.sin(t*1.3+1)*16,rz=Math.cos(t*.7)*34;
+ const cs=Math.cos(yaw),sn=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+ const sep=3.2*spc;
+ for(let i=0;i<N;i++){
+  const o=i*3,x=P[o],y=P[o+1],z=P[o+2];let vx=V[o],vy=V[o+1],vz=V[o+2];
+  let n=0,mx=0,my=0,mz=0,ax=0,ay=0,az=0,sx=0,sy=0,sz=0;
+  for(let k=0;k<K;k++){const j=NB[i*K+k];if(j<0)continue;const q=j*3,dx=P[q]-x,dy=P[q+1]-y,dz=P[q+2]-z;
+   n++;mx+=dx;my+=dy;mz+=dz;ax+=V[q];ay+=V[q+1];az+=V[q+2];
+   const d=Math.sqrt(dx*dx+dy*dy+dz*dz)+.01;if(d<sep){const f=(sep-d)/(sep*d);sx-=dx*f;sy-=dy*f;sz-=dz*f}}
+  if(n){const c=.004*coh/n,a=.09*ali;
+   vx+=mx*c+(ax/n-vx)*a+sx*.06;vy+=my*c+(ay/n-vy)*a+sy*.06;vz+=mz*c+(az/n-vz)*a+sz*.06}
+  const dx=rx-x,dy=ry-y,dz=rz-z,d=Math.sqrt(dx*dx+dy*dy+dz*dz)+.01;
+  const pull=.006+Math.max(0,d-35)*.0007;
+  vx+=dx/d*pull;vy+=dy/d*pull*1.5;vz+=dz/d*pull;
+  vx+=(Math.random()-.5)*.03;vy+=(Math.random()-.5)*.03;vz+=(Math.random()-.5)*.03;
+  if(pointer.on){ // flee the line of sight under the finger, so the tear is visible on screen
+   const qx=x-ox,qy=y-oy,qz=z-oz,X=qx*cs-qz*sn,Z0=qx*sn+qz*cs,Y=qy*cp-Z0*sp,Z=qy*sp+Z0*cp,s=(CAM+Z)/F;
+   const ex=X-(pointer.x-W/2)*s,ey=Y-(pointer.y-H/2)*s,e=Math.sqrt(ex*ex+ey*ey)+.01,R=Math.max(14,spread*.7);
+   if(e<R){const f=(1-e/R)*.32,ux=ex/e*f,uy=ey/e*f,z0=-uy*sp;
+    vx+=ux*cs+z0*sn;vy+=uy*cp;vz+=-ux*sn+z0*cs}
+  }
+  let v=Math.sqrt(vx*vx+vy*vy+vz*vz)+1e-6;const m=v>1.15?1.15/v:v<.6?.6/v:1;
+  V[o]=vx*m;V[o+1]=vy*m;V[o+2]=vz*m;
+ }
+ for(let i=0;i<N*3;i++)P[i]+=V[i]*.72;
+ frame++;
+}
+function resize(){const r=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*r;cv.height=H*r;g.setTransform(r,0,0,r,0,0);g.fillStyle='#050505';g.fillRect(0,0,W,H)}
+function follow(ease){
+ let x=0,y=0,z=0,q=0;for(let i=0;i<N*3;i+=3){x+=P[i];y+=P[i+1];z+=P[i+2]}
+ x/=N;y/=N;z/=N;for(let i=0;i<N*3;i+=3)q+=(P[i]-x)**2+(P[i+1]-y)**2+(P[i+2]-z)**2;
+ ox+=(x-ox)*ease;oy+=(y-oy)*ease;oz+=(z-oz)*ease;spread+=(Math.sqrt(q/N)-spread)*ease;
+ F=Math.min(W,H*.75)*.5*CAM/Math.max(18,spread*1.7);
+}
+function draw(){
+ g.fillStyle='rgba(5,5,5,.55)';g.fillRect(0,0,W,H);
+ const cs=Math.cos(yaw),sn=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+ g.fillStyle='#f2efe6';
+ for(let i=0;i<N;i++){const x=P[i*3]-ox,y=P[i*3+1]-oy,z=P[i*3+2]-oz;
+  const X=x*cs-z*sn,Z0=x*sn+z*cs,Y=y*cp-Z0*sp,Z=y*sp+Z0*cp,d=CAM+Z;if(d<20)continue;
+  const k=F/d,s=Math.max(.8,k*.42);
+  g.globalAlpha=Math.max(.18,Math.min(.85,1-(d-130)/150));
+  g.fillRect(W/2+X*k-s/2,H/2+Y*k-s/2,s,s)}
+ g.globalAlpha=1;
+ if(pointer.on){g.fillStyle='#e8231a';g.beginPath();g.arc(pointer.x,pointer.y,6,0,7);g.fill()}
+}
+const $=id=>document.getElementById(id);
+function loop(){yaw+=.0016;step(+$('coh').value,+$('ali').value,+$('spc').value);follow(.04);draw();requestAnimationFrame(loop)}
+function move(e){pointer.x=e.clientX;pointer.y=e.clientY}
+cv.addEventListener('pointerdown',e=>{pointer.on=true;move(e)});
+cv.addEventListener('pointermove',e=>{move(e);if(e.pointerType==='mouse')pointer.on=true});
+for(const n of ['pointerup','pointercancel','pointerleave'])cv.addEventListener(n,()=>pointer.on=false);
+addEventListener('resize',resize);resize();
+for(let i=0;i<240;i++){yaw+=.0016;step(1,1,1)}
+follow(1);loop();
+</script></body></html>
